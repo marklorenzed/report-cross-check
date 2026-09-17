@@ -5,17 +5,18 @@ import {
   ManualComparisonRow,
   PAYMENT_METHOD_LABELS,
   PAYMENT_METHOD_ORDER,
+  PaymentMethod,
   PaymentMethodTotals,
 } from "../lib/collectionReport";
 import { currency } from "../lib/currency";
 
-function totalOf(totals: PaymentMethodTotals): number {
-  return PAYMENT_METHOD_ORDER.reduce((sum, method) => sum + totals[method], 0);
+function totalOf(totals: PaymentMethodTotals, methods: PaymentMethod[]): number {
+  return methods.reduce((sum, method) => sum + totals[method], 0);
 }
 
-function isRowMatch(row: ManualComparisonRow): boolean {
+function isRowMatch(row: ManualComparisonRow, methods: PaymentMethod[]): boolean {
   if (!row.reportTotals || !row.manualTotals) return false;
-  return PAYMENT_METHOD_ORDER.every(
+  return methods.every(
     (method) => row.reportTotals![method] === row.manualTotals![method]
   );
 }
@@ -45,8 +46,10 @@ function ValueCell({
 
 export default function ManualComparisonTable({
   rows,
+  methods = PAYMENT_METHOD_ORDER,
 }: {
   rows: ManualComparisonRow[];
+  methods?: PaymentMethod[];
 }) {
   const [clinicFilter, setClinicFilter] = useState("all");
   const [dateFilter, setDateFilter] = useState("all");
@@ -55,11 +58,11 @@ export default function ManualComparisonTable({
   const nonZeroRows = useMemo(
     () =>
       rows.filter((row) => {
-        const manualTotal = row.manualTotals ? totalOf(row.manualTotals) : 0;
-        const reportTotal = row.reportTotals ? totalOf(row.reportTotals) : 0;
+        const manualTotal = row.manualTotals ? totalOf(row.manualTotals, methods) : 0;
+        const reportTotal = row.reportTotals ? totalOf(row.reportTotals, methods) : 0;
         return manualTotal !== 0 || reportTotal !== 0;
       }),
-    [rows]
+    [rows, methods]
   );
 
   const clinicOptions = useMemo(
@@ -75,7 +78,7 @@ export default function ManualComparisonTable({
     (row) =>
       (clinicFilter === "all" || row.clinicLabel === clinicFilter) &&
       (dateFilter === "all" || row.date === dateFilter) &&
-      (!mismatchesOnly || !isRowMatch(row))
+      (!mismatchesOnly || !isRowMatch(row, methods))
   );
 
   if (nonZeroRows.length === 0) {
@@ -144,7 +147,7 @@ export default function ManualComparisonTable({
               <tr className="bg-black/[.03] text-zinc-500 dark:bg-white/[.06] dark:text-zinc-400">
                 <th className="px-3 py-2 text-left font-medium">Date</th>
                 <th className="px-3 py-2 text-left font-medium">Clinic</th>
-                {PAYMENT_METHOD_ORDER.map((method) => (
+                {methods.map((method) => (
                   <th key={method} className="px-3 py-2 text-right font-medium">
                     {PAYMENT_METHOD_LABELS[method]}
                   </th>
@@ -155,9 +158,9 @@ export default function ManualComparisonTable({
             </thead>
             <tbody>
               {visibleRows.map((row) => {
-                const match = isRowMatch(row);
-                const manualTotal = row.manualTotals ? totalOf(row.manualTotals) : null;
-                const reportTotal = row.reportTotals ? totalOf(row.reportTotals) : null;
+                const match = isRowMatch(row, methods);
+                const manualTotal = row.manualTotals ? totalOf(row.manualTotals, methods) : null;
+                const reportTotal = row.reportTotals ? totalOf(row.reportTotals, methods) : null;
 
                 return (
                   <tr
@@ -170,7 +173,7 @@ export default function ManualComparisonTable({
                     <td className="px-3 py-1.5 text-zinc-700 dark:text-zinc-300">
                       {row.clinicLabel}
                     </td>
-                    {PAYMENT_METHOD_ORDER.map((method) => (
+                    {methods.map((method) => (
                       <ValueCell
                         key={method}
                         manualValue={row.manualTotals?.[method] ?? null}

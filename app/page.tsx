@@ -6,13 +6,16 @@ import FileDropzone, { ParsedWorkbook } from "./components/FileDropzone";
 import CollectionSummary from "./components/CollectionSummary";
 import ManualComparisonTable from "./components/ManualComparisonTable";
 import {
+  buildExpenseComparisonRows,
   buildManualComparisonRows,
+  EXPENSE_METHOD_ORDER,
   ManualDayTotals,
   PAYMENT_METHOD_LABELS,
   PAYMENT_METHOD_ORDER,
   PaymentMethod,
   parseManualStaffReport,
   summarizeCollectionUploads,
+  summarizeExpenseReport,
 } from "./lib/collectionReport";
 
 const MANUAL_REPORT_CLINICS = [
@@ -28,6 +31,9 @@ export default function Home() {
   const [paymentUploads, setPaymentUploads] = useState<
     Partial<Record<PaymentMethod, ParsedWorkbook>>
   >({});
+  const [expenseUpload, setExpenseUpload] = useState<ParsedWorkbook | null>(
+    null
+  );
   const [manualReports, setManualReports] = useState<
     Partial<Record<ManualReportClinicId, ParsedWorkbook>>
   >({});
@@ -41,6 +47,11 @@ export default function Home() {
     if (Object.keys(workbooksByMethod).length === 0) return null;
     return summarizeCollectionUploads(workbooksByMethod);
   }, [paymentUploads]);
+
+  const expenseReportDays = useMemo(
+    () => (expenseUpload ? summarizeExpenseReport(expenseUpload.workbook) : null),
+    [expenseUpload]
+  );
 
   const manualReportsByClinicLabel = useMemo(() => {
     const byClinicLabel: Record<string, ManualDayTotals[]> = {};
@@ -58,6 +69,11 @@ export default function Home() {
     [collectionDays, manualReportsByClinicLabel]
   );
 
+  const expenseComparisonRows = useMemo(
+    () => buildExpenseComparisonRows(expenseReportDays ?? [], manualReportsByClinicLabel),
+    [expenseReportDays, manualReportsByClinicLabel]
+  );
+
   const canCompare =
     collectionDays !== null &&
     MANUAL_REPORT_CLINICS.every((clinic) => manualReports[clinic.id]);
@@ -71,6 +87,10 @@ export default function Home() {
       else delete next[method];
       return next;
     });
+  };
+
+  const handleExpenseUpload = (parsed: ParsedWorkbook | null) => {
+    setExpenseUpload(parsed);
   };
 
   const handleManualUpload = (clinicId: ManualReportClinicId) => (
@@ -107,6 +127,13 @@ export default function Home() {
             />
           ))}
         </div>
+         <div className="grid w-full grid-cols-1 gap-6 sm:grid-cols-2">
+          <FileDropzone
+            label="Expense report"
+            description="From the system, all clinics (Account column determines payment method)"
+            onFileParsed={handleExpenseUpload}
+          />
+        </div>
 
         <div className="grid w-full grid-cols-1 gap-6 sm:grid-cols-2 lg:grid-cols-4">
           {MANUAL_REPORT_CLINICS.map((clinic) => (
@@ -118,6 +145,8 @@ export default function Home() {
             />
           ))}
         </div>
+
+       
 
         {/* {collectionDays && (
           <div className="flex w-full flex-col gap-4">
@@ -134,6 +163,15 @@ export default function Home() {
               Manual report comparison (Manual - System)
             </h2>
             <ManualComparisonTable rows={comparisonRows} />
+          </div>
+        )}
+
+        {expenseComparisonRows.length > 0 && (
+          <div className="flex w-full flex-col gap-4">
+            <h2 className="text-lg font-semibold text-black dark:text-zinc-50">
+              Clinic expenses comparison (Manual - System)
+            </h2>
+            <ManualComparisonTable rows={expenseComparisonRows} methods={EXPENSE_METHOD_ORDER} />
           </div>
         )}
       </main>

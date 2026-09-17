@@ -288,13 +288,29 @@ function mapManualReportColumns(
 export type ManualDayTotals = {
   date: string;
   totals: PaymentMethodTotals;
+  expenses: PaymentMethodTotals;
 };
+
+function readRowTotals(
+  row: unknown[],
+  columns: Record<PaymentMethod, number[]>
+): PaymentMethodTotals {
+  const totals = emptyTotals();
+  for (const method of PAYMENT_METHOD_ORDER) {
+    totals[method] = columns[method].reduce((sum, columnIndex) => {
+      const value = Number(row[columnIndex]);
+      return sum + (Number.isFinite(value) ? value : 0);
+    }, 0);
+  }
+  return totals;
+}
 
 /**
  * Manual staff reports list one dentist per row per day (day starts with a
- * date serial in column A), ending in a TOTAL row. Only that TOTAL row is
- * used; the per-dentist rows and the EXPENSES/END TOTAL rows are ignored,
- * as is column A on the TOTAL row itself (it holds a grand total, not a date).
+ * date serial in column A), ending in a TOTAL row and an EXPENSES row. Only
+ * those two rows are used; the per-dentist rows and END TOTAL row are
+ * ignored, as is column A on the TOTAL/EXPENSES rows (it holds a grand
+ * total, not a date).
  */
 export function parseManualStaffReport(
   workbook: XLSX.WorkBook
@@ -309,6 +325,19 @@ export function parseManualStaffReport(
   const columns = mapManualReportColumns(rows[headerIndex]);
   const days: ManualDayTotals[] = [];
   let pendingDateSerial: number | null = null;
+  let pendingTotals: PaymentMethodTotals | null = null;
+
+  const flushPendingDay = () => {
+    if (pendingDateSerial !== null && pendingTotals !== null) {
+      days.push({
+        date: excelSerialToDateLabel(pendingDateSerial),
+        totals: pendingTotals,
+        expenses: emptyTotals(),
+      });
+    }
+    pendingDateSerial = null;
+    pendingTotals = null;
+  };
 
   for (let i = headerIndex + 1; i < rows.length; i++) {
     const row = rows[i];
@@ -317,24 +346,32 @@ export function parseManualStaffReport(
     const label = String(row[1] ?? "").trim().toUpperCase();
 
     if (label === "TOTAL") {
-      if (pendingDateSerial !== null) {
-        const totals = emptyTotals();
-        for (const method of PAYMENT_METHOD_ORDER) {
-          totals[method] = columns[method].reduce((sum, columnIndex) => {
-            const value = Number(row[columnIndex]);
-            return sum + (Number.isFinite(value) ? value : 0);
-          }, 0);
-        }
-        days.push({ date: excelSerialToDateLabel(pendingDateSerial), totals });
+      if (pendingDateSerial !== null) pendingTotals = readRowTotals(row, columns);
+      continue;
+    }
+
+    if (label === "EXPENSES") {
+      if (pendingDateSerial !== null && pendingTotals !== null) {
+        days.push({
+          date: excelSerialToDateLabel(pendingDateSerial),
+          totals: pendingTotals,
+          expenses: readRowTotals(row, columns),
+        });
         pendingDateSerial = null;
+        pendingTotals = null;
       }
       continue;
     }
 
-    if (label === "EXPENSES" || label === "END TOTAL") continue;
+    if (label === "END TOTAL") continue;
 
-    if (typeof row[0] === "number") pendingDateSerial = row[0];
+    if (typeof row[0] === "number") {
+      flushPendingDay();
+      pendingDateSerial = row[0];
+    }
   }
+
+  flushPendingDay();
 
   return days;
 }
@@ -348,10 +385,12 @@ export type ManualComparisonRow = {
 
 const COMPARISON_KEY_SEPARATOR = "\u0000";
 
-/** Joins the payment-method-report summary with per-clinic manual reports by date + clinic. */
-export function buildManualComparisonRows(
+type DatedTotals = { date: string; totals: PaymentMethodTotals };
+
+/** Joins a payment-method-report summary with per-clinic manual totals by date + clinic. */
+function joinReportWithManualTotals(
   days: DaySummary[],
-  manualReportsByClinicLabel: Record<string, ManualDayTotals[]>
+  manualTotalsByClinicLabel: Record<string, DatedTotals[]>
 ): ManualComparisonRow[] {
   const reportTotals = new Map<string, PaymentMethodTotals>();
   for (const day of days) {
@@ -364,13 +403,13 @@ export function buildManualComparisonRows(
   }
 
   const manualTotals = new Map<string, PaymentMethodTotals>();
-  for (const [clinicLabel, manualDays] of Object.entries(
-    manualReportsByClinicLabel
+  for (const [clinicLabel, entries] of Object.entries(
+    manualTotalsByClinicLabel
   )) {
-    for (const manualDay of manualDays) {
+    for (const entry of entries) {
       manualTotals.set(
-        `${manualDay.date}${COMPARISON_KEY_SEPARATOR}${clinicLabel}`,
-        manualDay.totals
+        `${entry.date}${COMPARISON_KEY_SEPARATOR}${clinicLabel}`,
+        entry.totals
       );
     }
   }
@@ -392,3 +431,130 @@ export function buildManualComparisonRows(
     return a.clinicLabel.localeCompare(b.clinicLabel);
   });
 }
+
+/** Joins the payment-method-report summary with per-clinic manual reports by date + clinic. */
+export function buildManualComparisonRows(
+  days: DaySummary[],
+  manualReportsByClinicLabel: Record<string, ManualDayTotals[]>
+): ManualComparisonRow[] {
+  const manualTotalsByClinicLabel: Record<string, DatedTotals[]> = {};
+  for (const [clinicLabel, manualDays] of Object.entries(
+    manualReportsByClinicLabel
+  )) {
+    manualTotalsByClinicLabel[clinicLabel] = manualDays.map((day) => ({
+      date: day.date,
+      totals: day.totals,
+    }));
+  }
+  return joinReportWithManualTotals(days, manualTotalsByClinicLabel);
+}
+
+export const EXPENSE_METHOD_ORDER: PaymentMethod[] = [
+  "cash",
+  "gcash",
+  "bankTransfer",
+  "maya",
+];
+
+/** Joins a system expense-report summary with per-clinic manual EXPENSES rows by date + clinic. */
+export function buildExpenseComparisonRows(
+  expenseReportDays: DaySummary[],
+  manualReportsByClinicLabel: Record<string, ManualDayTotals[]>
+): ManualComparisonRow[] {
+  const manualExpensesByClinicLabel: Record<string, DatedTotals[]> = {};
+  for (const [clinicLabel, manualDays] of Object.entries(
+    manualReportsByClinicLabel
+  )) {
+    manualExpensesByClinicLabel[clinicLabel] = manualDays.map((day) => ({
+      date: day.date,
+      totals: day.expenses,
+    }));
+  }
+  return joinReportWithManualTotals(expenseReportDays, manualExpensesByClinicLabel);
+}
+
+const EXPENSE_ACCOUNT_METHODS: Record<string, PaymentMethod> = {
+  "dmp cash": "cash",
+  cash: "cash",
+  "dmp gcash": "gcash",
+  gcash: "gcash",
+  "dmp maya": "maya",
+  "dmp paymaya": "maya",
+  maya: "maya",
+  paymaya: "maya",
+  "dmp bank account": "bankTransfer",
+  "dmp bank": "bankTransfer",
+  "bank account": "bankTransfer",
+  "bank transfer": "bankTransfer",
+  bank: "bankTransfer",
+  "dmp cc": "cc",
+  "credit card": "cc",
+  "dmp dc": "dc",
+  "debit card": "dc",
+};
+
+type ExpenseReportRawRow = {
+  Date?: unknown;
+  Clinic?: unknown;
+  Account?: unknown;
+  Amount?: unknown;
+};
+
+/**
+ * The system expense report lists every clinic's expenses in one sheet; the
+ * "Account" column (e.g. "DMP CASH", "DMP GCASH", "DMP BANK ACCOUNT")
+ * determines which payment method each row's amount counts against.
+ */
+export function summarizeExpenseReport(workbook: XLSX.WorkBook): DaySummary[] {
+  const sheet =
+    findSheetByName(workbook, "Expense Report") ??
+    workbook.Sheets[workbook.SheetNames[0]];
+  if (!sheet) return [];
+
+  const rawRows = XLSX.utils.sheet_to_json<ExpenseReportRawRow>(sheet);
+  const dayMap = new Map<string, Map<string, ClinicSummary>>();
+
+  for (const row of rawRows) {
+    const date = String(row["Date"] ?? "").trim();
+    const clinicLab = String(row["Clinic"] ?? "").trim();
+    const account = String(row["Account"] ?? "").trim().toLowerCase();
+    const method = EXPENSE_ACCOUNT_METHODS[account];
+    const amount = Number(row["Amount"]);
+    if (!date || !clinicLab || !method) continue;
+
+    let clinicMap = dayMap.get(date);
+    if (!clinicMap) {
+      clinicMap = new Map();
+      dayMap.set(date, clinicMap);
+    }
+
+    let clinic = clinicMap.get(clinicLab);
+    if (!clinic) {
+      clinic = { clinicLab, totals: emptyTotals(), total: 0 };
+      clinicMap.set(clinicLab, clinic);
+    }
+
+    const value = Number.isFinite(amount) ? amount : 0;
+    clinic.totals[method] += value;
+    clinic.total += value;
+  }
+
+  const days: DaySummary[] = [];
+  for (const [date, clinicMap] of dayMap) {
+    const clinics = [...clinicMap.values()].sort((a, b) =>
+      a.clinicLab.localeCompare(b.clinicLab)
+    );
+
+    const totals = emptyTotals();
+    let total = 0;
+    for (const clinic of clinics) {
+      for (const method of PAYMENT_METHOD_ORDER) totals[method] += clinic.totals[method];
+      total += clinic.total;
+    }
+
+    days.push({ date, clinics, dentists: [], totals, total });
+  }
+
+  return days.sort((a, b) => parseReportDate(a.date) - parseReportDate(b.date));
+}
+
