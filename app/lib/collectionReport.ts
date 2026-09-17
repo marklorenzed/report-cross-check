@@ -230,3 +230,165 @@ function parseReportDate(value: string): number {
   const parsed = Date.parse(value);
   return Number.isNaN(parsed) ? 0 : parsed;
 }
+
+const MANUAL_REPORT_HEADER_ALIASES: Record<PaymentMethod, string[]> = {
+  cash: ["cash"],
+  gcash: ["gcash"],
+  maya: ["maya", "paymaya"],
+  bankTransfer: ["bank", "bank transfer", "bdo", "bpi"],
+  cc: ["cc", "credit card"],
+  dc: ["dc", "debit card"],
+};
+
+function excelSerialToDateLabel(serial: number): string {
+  const date = new Date(Date.UTC(1899, 11, 30) + serial * 86400000);
+  return date.toLocaleDateString("en-US", {
+    month: "short",
+    day: "2-digit",
+    year: "numeric",
+    timeZone: "UTC",
+  });
+}
+
+function findManualReportHeaderRowIndex(rows: unknown[][]): number {
+  const paymentLabels = new Set(
+    Object.values(MANUAL_REPORT_HEADER_ALIASES).flat()
+  );
+  return rows.findIndex((row) =>
+    row.some((cell) => {
+      const label = String(cell ?? "").trim().toLowerCase();
+      return label === "dentist" || paymentLabels.has(label);
+    })
+  );
+}
+
+function mapManualReportColumns(
+  headerRow: unknown[]
+): Record<PaymentMethod, number[]> {
+  const columns: Record<PaymentMethod, number[]> = {
+    cash: [],
+    gcash: [],
+    maya: [],
+    bankTransfer: [],
+    cc: [],
+    dc: [],
+  };
+  headerRow.forEach((cell, index) => {
+    const label = String(cell ?? "").trim().toLowerCase();
+    if (!label) return;
+    for (const method of PAYMENT_METHOD_ORDER) {
+      if (MANUAL_REPORT_HEADER_ALIASES[method].includes(label)) {
+        columns[method].push(index);
+      }
+    }
+  });
+  return columns;
+}
+
+export type ManualDayTotals = {
+  date: string;
+  totals: PaymentMethodTotals;
+};
+
+/**
+ * Manual staff reports list one dentist per row per day (day starts with a
+ * date serial in column A), ending in a TOTAL row. Only that TOTAL row is
+ * used; the per-dentist rows and the EXPENSES/END TOTAL rows are ignored,
+ * as is column A on the TOTAL row itself (it holds a grand total, not a date).
+ */
+export function parseManualStaffReport(
+  workbook: XLSX.WorkBook
+): ManualDayTotals[] {
+  const sheet = workbook.Sheets[workbook.SheetNames[0]];
+  if (!sheet) return [];
+
+  const rows = XLSX.utils.sheet_to_json<unknown[]>(sheet, { header: 1 });
+  const headerIndex = findManualReportHeaderRowIndex(rows);
+  if (headerIndex === -1) return [];
+
+  const columns = mapManualReportColumns(rows[headerIndex]);
+  const days: ManualDayTotals[] = [];
+  let pendingDateSerial: number | null = null;
+
+  for (let i = headerIndex + 1; i < rows.length; i++) {
+    const row = rows[i];
+    if (!row || row.length === 0) continue;
+
+    const label = String(row[1] ?? "").trim().toUpperCase();
+
+    if (label === "TOTAL") {
+      if (pendingDateSerial !== null) {
+        const totals = emptyTotals();
+        for (const method of PAYMENT_METHOD_ORDER) {
+          totals[method] = columns[method].reduce((sum, columnIndex) => {
+            const value = Number(row[columnIndex]);
+            return sum + (Number.isFinite(value) ? value : 0);
+          }, 0);
+        }
+        days.push({ date: excelSerialToDateLabel(pendingDateSerial), totals });
+        pendingDateSerial = null;
+      }
+      continue;
+    }
+
+    if (label === "EXPENSES" || label === "END TOTAL") continue;
+
+    if (typeof row[0] === "number") pendingDateSerial = row[0];
+  }
+
+  return days;
+}
+
+export type ManualComparisonRow = {
+  date: string;
+  clinicLabel: string;
+  reportTotals: PaymentMethodTotals | null;
+  manualTotals: PaymentMethodTotals | null;
+};
+
+const COMPARISON_KEY_SEPARATOR = "\u0000";
+
+/** Joins the payment-method-report summary with per-clinic manual reports by date + clinic. */
+export function buildManualComparisonRows(
+  days: DaySummary[],
+  manualReportsByClinicLabel: Record<string, ManualDayTotals[]>
+): ManualComparisonRow[] {
+  const reportTotals = new Map<string, PaymentMethodTotals>();
+  for (const day of days) {
+    for (const clinic of day.clinics) {
+      reportTotals.set(
+        `${day.date}${COMPARISON_KEY_SEPARATOR}${clinic.clinicLab}`,
+        clinic.totals
+      );
+    }
+  }
+
+  const manualTotals = new Map<string, PaymentMethodTotals>();
+  for (const [clinicLabel, manualDays] of Object.entries(
+    manualReportsByClinicLabel
+  )) {
+    for (const manualDay of manualDays) {
+      manualTotals.set(
+        `${manualDay.date}${COMPARISON_KEY_SEPARATOR}${clinicLabel}`,
+        manualDay.totals
+      );
+    }
+  }
+
+  const keys = new Set([...reportTotals.keys(), ...manualTotals.keys()]);
+  const rows: ManualComparisonRow[] = [...keys].map((key) => {
+    const [date, clinicLabel] = key.split(COMPARISON_KEY_SEPARATOR);
+    return {
+      date,
+      clinicLabel,
+      reportTotals: reportTotals.get(key) ?? null,
+      manualTotals: manualTotals.get(key) ?? null,
+    };
+  });
+
+  return rows.sort((a, b) => {
+    const dateDiff = parseReportDate(a.date) - parseReportDate(b.date);
+    if (dateDiff !== 0) return dateDiff;
+    return a.clinicLabel.localeCompare(b.clinicLabel);
+  });
+}

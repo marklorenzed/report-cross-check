@@ -4,20 +4,33 @@ import { useMemo, useState } from "react";
 import type * as XLSX from "xlsx";
 import FileDropzone, { ParsedWorkbook } from "./components/FileDropzone";
 import CollectionSummary from "./components/CollectionSummary";
+import ManualComparisonTable from "./components/ManualComparisonTable";
 import {
+  buildManualComparisonRows,
+  ManualDayTotals,
   PAYMENT_METHOD_LABELS,
   PAYMENT_METHOD_ORDER,
   PaymentMethod,
+  parseManualStaffReport,
   summarizeCollectionUploads,
 } from "./lib/collectionReport";
+
+const MANUAL_REPORT_CLINICS = [
+  { id: "staRosa", label: "DMP Dental Clinic Sta. Rosa" },
+  { id: "calamba", label: "DMP Dental Clinic Calamba" },
+  { id: "sanPedro", label: "DMP Dental Clinic San Pedro" },
+  { id: "stoDomingo", label: "DMP Dental Clinic Sto. Domingo" },
+] as const;
+
+type ManualReportClinicId = (typeof MANUAL_REPORT_CLINICS)[number]["id"];
 
 export default function Home() {
   const [paymentUploads, setPaymentUploads] = useState<
     Partial<Record<PaymentMethod, ParsedWorkbook>>
   >({});
-  const [manualReport, setManualReport] = useState<ParsedWorkbook | null>(
-    null
-  );
+  const [manualReports, setManualReports] = useState<
+    Partial<Record<ManualReportClinicId, ParsedWorkbook>>
+  >({});
 
   const collectionDays = useMemo(() => {
     const workbooksByMethod: Partial<Record<PaymentMethod, XLSX.WorkBook>> = {};
@@ -29,7 +42,25 @@ export default function Home() {
     return summarizeCollectionUploads(workbooksByMethod);
   }, [paymentUploads]);
 
-  const canCompare = collectionDays !== null && manualReport !== null;
+  const manualReportsByClinicLabel = useMemo(() => {
+    const byClinicLabel: Record<string, ManualDayTotals[]> = {};
+    for (const clinic of MANUAL_REPORT_CLINICS) {
+      const upload = manualReports[clinic.id];
+      if (upload) {
+        byClinicLabel[clinic.label] = parseManualStaffReport(upload.workbook);
+      }
+    }
+    return byClinicLabel;
+  }, [manualReports]);
+
+  const comparisonRows = useMemo(
+    () => buildManualComparisonRows(collectionDays ?? [], manualReportsByClinicLabel),
+    [collectionDays, manualReportsByClinicLabel]
+  );
+
+  const canCompare =
+    collectionDays !== null &&
+    MANUAL_REPORT_CLINICS.every((clinic) => manualReports[clinic.id]);
 
   const handlePaymentUpload = (method: PaymentMethod) => (
     parsed: ParsedWorkbook | null
@@ -38,6 +69,17 @@ export default function Home() {
       const next = { ...prev };
       if (parsed) next[method] = parsed;
       else delete next[method];
+      return next;
+    });
+  };
+
+  const handleManualUpload = (clinicId: ManualReportClinicId) => (
+    parsed: ParsedWorkbook | null
+  ) => {
+    setManualReports((prev) => {
+      const next = { ...prev };
+      if (parsed) next[clinicId] = parsed;
+      else delete next[clinicId];
       return next;
     });
   };
@@ -66,27 +108,32 @@ export default function Home() {
           ))}
         </div>
 
-        <div className="grid w-full grid-cols-1 gap-6 sm:grid-cols-2">
-          <FileDropzone
-            label="Manual staff report"
-            description="Compiled by our staff"
-            onFileParsed={setManualReport}
-          />
+        <div className="grid w-full grid-cols-1 gap-6 sm:grid-cols-2 lg:grid-cols-4">
+          {MANUAL_REPORT_CLINICS.map((clinic) => (
+            <FileDropzone
+              key={clinic.id}
+              label={clinic.label}
+              description="Manual report compiled by our staff"
+              onFileParsed={handleManualUpload(clinic.id)}
+            />
+          ))}
         </div>
 
-        <button
-          disabled={!canCompare}
-          className="flex h-12 w-full max-w-xs items-center justify-center rounded-full bg-foreground px-5 text-sm font-medium text-background transition-colors enabled:hover:bg-[#383838] disabled:cursor-not-allowed disabled:opacity-40 dark:enabled:hover:bg-[#ccc]"
-        >
-          Cross-check reports
-        </button>
-
-        {collectionDays && (
+        {/* {collectionDays && (
           <div className="flex w-full flex-col gap-4">
             <h2 className="text-lg font-semibold text-black dark:text-zinc-50">
               Collection Report summary
             </h2>
             <CollectionSummary days={collectionDays} />
+          </div>
+        )} */}
+
+        {comparisonRows.length > 0 && (
+          <div className="flex w-full flex-col gap-4">
+            <h2 className="text-lg font-semibold text-black dark:text-zinc-50">
+              Manual report comparison (Manual - System)
+            </h2>
+            <ManualComparisonTable rows={comparisonRows} />
           </div>
         )}
       </main>
