@@ -2,30 +2,22 @@
 
 import { useMemo, useState } from "react";
 import type * as XLSX from "xlsx";
-import FileDropzone, { ParsedWorkbook } from "./components/FileDropzone";
-import CollectionSummary from "./components/CollectionSummary";
+import { ParsedWorkbook } from "./components/FileDropzone";
+import UploadSidebar from "./components/UploadSidebar";
+import Accordion from "./components/Accordion";
 import ManualComparisonTable from "./components/ManualComparisonTable";
+import { MANUAL_REPORT_CLINICS, ManualReportClinicId } from "./lib/clinics";
 import {
   buildExpenseComparisonRows,
   buildManualComparisonRows,
   EXPENSE_METHOD_ORDER,
   ManualDayTotals,
-  PAYMENT_METHOD_LABELS,
   PAYMENT_METHOD_ORDER,
   PaymentMethod,
   parseManualStaffReport,
   summarizeCollectionUploads,
   summarizeExpenseReport,
 } from "./lib/collectionReport";
-
-const MANUAL_REPORT_CLINICS = [
-  { id: "staRosa", label: "DMP Dental Clinic Sta. Rosa" },
-  { id: "calamba", label: "DMP Dental Clinic Calamba" },
-  { id: "sanPedro", label: "DMP Dental Clinic San Pedro" },
-  { id: "stoDomingo", label: "DMP Dental Clinic Sto. Domingo" },
-] as const;
-
-type ManualReportClinicId = (typeof MANUAL_REPORT_CLINICS)[number]["id"];
 
 export default function Home() {
   const [paymentUploads, setPaymentUploads] = useState<
@@ -105,8 +97,14 @@ export default function Home() {
   };
 
   return (
-    <div className="flex flex-col flex-1 items-center bg-zinc-50 font-sans dark:bg-black">
-      <main className="flex flex-1 w-full max-w-5xl flex-col items-center gap-10 py-32 px-16 bg-white dark:bg-black">
+    <div className="flex flex-1 items-stretch bg-zinc-50 font-sans dark:bg-black">
+      <UploadSidebar
+        onPaymentUpload={handlePaymentUpload}
+        onExpenseUpload={handleExpenseUpload}
+        onManualUpload={handleManualUpload}
+      />
+
+      <main className="flex flex-1 flex-col items-center gap-10 py-16 px-16 bg-white dark:bg-black">
         <div className="flex flex-col items-center gap-2 text-center">
           <h1 className="text-3xl font-semibold leading-10 tracking-tight text-black dark:text-zinc-50">
             Cross-check your reports
@@ -117,62 +115,16 @@ export default function Home() {
           </p>
         </div>
 
-        <div className="grid w-full grid-cols-1 gap-6 sm:grid-cols-2 lg:grid-cols-3">
-          {PAYMENT_METHOD_ORDER.map((method) => (
-            <FileDropzone
-              key={method}
-              label={`${PAYMENT_METHOD_LABELS[method]} report`}
-              description="Filtered to this payment method"
-              onFileParsed={handlePaymentUpload(method)}
-            />
-          ))}
-        </div>
-         <div className="grid w-full grid-cols-1 gap-6 sm:grid-cols-2">
-          <FileDropzone
-            label="Expense report"
-            description="From the system, all clinics (Account column determines payment method)"
-            onFileParsed={handleExpenseUpload}
-          />
-        </div>
-
-        <div className="grid w-full grid-cols-1 gap-6 sm:grid-cols-2 lg:grid-cols-4">
-          {MANUAL_REPORT_CLINICS.map((clinic) => (
-            <FileDropzone
-              key={clinic.id}
-              label={clinic.label}
-              description="Manual report compiled by our staff"
-              onFileParsed={handleManualUpload(clinic.id)}
-            />
-          ))}
-        </div>
-
-       
-
-        {/* {collectionDays && (
-          <div className="flex w-full flex-col gap-4">
-            <h2 className="text-lg font-semibold text-black dark:text-zinc-50">
-              Collection Report summary
-            </h2>
-            <CollectionSummary days={collectionDays} />
-          </div>
-        )} */}
-
         {comparisonRows.length > 0 && (
-          <div className="flex w-full flex-col gap-4">
-            <h2 className="text-lg font-semibold text-black dark:text-zinc-50">
-              Manual report comparison (Manual - System)
-            </h2>
+          <Accordion title="Manual report comparison (Manual - System)">
             <ManualComparisonTable rows={comparisonRows} />
-          </div>
+          </Accordion>
         )}
 
         {expenseComparisonRows.length > 0 && (
-          <div className="flex w-full flex-col gap-4">
-            <h2 className="text-lg font-semibold text-black dark:text-zinc-50">
-              Clinic expenses comparison (Manual - System)
-            </h2>
+          <Accordion title="Clinic expenses comparison (Manual - System)">
             <ManualComparisonTable rows={expenseComparisonRows} methods={EXPENSE_METHOD_ORDER} />
-          </div>
+          </Accordion>
         )}
       </main>
     </div>
